@@ -1,3 +1,4 @@
 SET,name,sidiq
 {"Set":{"key":"greet","value":"Hello, Sidiq! Welcome to Rust."}}
 {"Set":{"key":"language","value":"Rust"}}
+{"Set":{"key":"name","value":"sidiq"}}

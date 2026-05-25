@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
+use std::sync::{Arc, Mutex};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Command {
@@ -84,6 +85,27 @@ impl KvStore {
         
         self.map.remove(&key);
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct SharedKvStore(Arc<Mutex<KvStore>>);
+
+impl SharedKvStore {
+    pub fn new(store: KvStore) -> Self {
+        SharedKvStore(Arc::new(Mutex::new(store)))
+    }
+
+    pub fn set(&self, key: String, value: String) -> io::Result<()> {
+        self.0.lock().unwrap().set(key, value)
+    }
+
+    pub fn get(&self, key: String) -> Option<String> {
+        self.0.lock().unwrap().get(key)
+    }
+
+    pub fn remove(&self, key: String) -> io::Result<()> {
+        self.0.lock().unwrap().remove(key)
     }
 }
 

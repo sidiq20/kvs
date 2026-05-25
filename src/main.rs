@@ -1,10 +1,11 @@
 mod store;
 
-use store::{KvStore, Command, Response};
+use store::{KvStore, Command, Response, SharedKvStore};
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::thread;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -23,7 +24,10 @@ fn main() {
 // --- SERVER CODE ---
 fn run_server() {
     let path = PathBuf::from("kvs.log");
-    let mut store = KvStore::open(path).expect("Failed to open store");
+    let base_store = KvStore::open(path).expect("Failed to open store");
+    
+    // Wrap the store in our thread-safe wrapper
+    let store = SharedKvStore::new(base_store);
     
     let listener = TcpListener::bind("127.0.0.1:4000").expect("Could not bind to port 4000");
     println!("Server listening on 127.0.0.1:4000...");
@@ -31,37 +35,41 @@ fn run_server() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                // Read the command from the client
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
+                // Clone the atomic reference (cheap) to pass into the new thread
+                let thread_store = store.clone();
                 
-                if reader.read_line(&mut line).is_ok() {
-                    if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
-                        
-                        // Execute the command
-                        let response = match cmd {
-                            Command::Set { key, value } => {
-                                match store.set(key, value) {
-                                    Ok(_) => Response::Ok(None),
-                                    Err(e) => Response::Err(e.to_string()),
+                // Spawn a new thread for this connection!
+                thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    
+                    if reader.read_line(&mut line).is_ok() {
+                        if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
+                            
+                            // Execute the command using the thread-safe store
+                            let response = match cmd {
+                                Command::Set { key, value } => {
+                                    match thread_store.set(key, value) {
+                                        Ok(_) => Response::Ok(None),
+                                        Err(e) => Response::Err(e.to_string()),
+                                    }
                                 }
-                            }
-                            Command::Get { key } => {
-                                Response::Ok(store.get(key))
-                            }
-                            Command::Remove { key } => {
-                                match store.remove(key) {
-                                    Ok(_) => Response::Ok(None),
-                                    Err(e) => Response::Err(e.to_string()),
+                                Command::Get { key } => {
+                                    Response::Ok(thread_store.get(key))
                                 }
-                            }
-                        };
-                        
-                        // Send the response back
-                        let res_json = serde_json::to_string(&response).unwrap();
-                        writeln!(stream, "{}", res_json).unwrap();
+                                Command::Remove { key } => {
+                                    match thread_store.remove(key) {
+                                        Ok(_) => Response::Ok(None),
+                                        Err(e) => Response::Err(e.to_string()),
+                                    }
+                                }
+                            };
+                            
+                            let res_json = serde_json::to_string(&response).unwrap();
+                            writeln!(stream, "{}", res_json).unwrap();
+                        }
                     }
-                }
+                });
             }
             Err(e) => eprintln!("Connection failed: {}", e),
         }
