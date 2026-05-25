@@ -2,6 +2,20 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Command {
+    Set { key: String, value: String },
+    Get { key: String },
+    Remove { key: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Response {
+    Ok(Option<String>),
+    Err(String),
+}
 
 pub struct KvStore {
     map: HashMap<String, String>,
@@ -21,19 +35,17 @@ impl KvStore {
             
             for line in reader.lines() {
                 let line = line?;
-                let parts: Vec<&str> = line.splitn(3, ',').collect();
-                if parts.len() < 2 { continue; }
-                
-                match parts[0] {
-                    "SET" => {
-                        if parts.len() == 3 {
-                            map.insert(parts[1].to_string(), parts[2].to_string());
+                // Parse each line as a json command
+                if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
+                    match cmd {
+                        Command::Set { key, value } => {
+                            map.insert(key, value);
+                    }
+                    Command::Remove { key } => {
+                            map.remove(&key);
                         }
+                    Command::Get { .. } => {}
                     }
-                    "RM" => {
-                        map.remove(parts[1]);
-                    }
-                    _ => {}
                 }
             }
         }
@@ -48,7 +60,9 @@ impl KvStore {
             .append(true)
             .open(&self.path)?;
             
-        writeln!(file, "SET,{},{}", key, value)?;
+        let cmd = Command::Set { key: key.clone(), value: value.clone() };
+        let serilized = serde_json::to_string(&cmd)?;
+        writeln!(file, "{}", serilized)?;
         
         // 2. Update the in-memory map
         self.map.insert(key, value);
@@ -64,29 +78,53 @@ impl KvStore {
             .append(true)
             .open(&self.path)?;
             
-        writeln!(file, "RM,{}", key)?;
+        let cmd = Command::Remove { key: key.clone() };
+        let serilized = serde_json::to_string(&cmd)?;
+        writeln!(file, "{}", serilized)?;
+        
         self.map.remove(&key);
         Ok(())
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
+
+    // helper function to create a store with a temporary log file
+    fn temp_store() -> (KvStore, PathBuf) {
+        let mut path = temp_dir();
+        // Generate a unique filename using the current timestamp
+        let time  = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("kvs_{}.log", time));
+
+        (KvStore::open(path.clone()).unwrap(), path)
+    }
 
     #[test]
     fn test_set_get() {
-        let mut store = KvStore::new();
-        store.set("key".to_string(), "value".to_string());
+        let (mut store, path) = temp_store();
+
+        store.set("key".to_string(), "value".to_string()).unwrap();
+
         assert_eq!(store.get("key".to_string()), Some("value".to_string()));
+
+        // Clean up the log file
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn test_remove() {
-        let mut store = KvStore::new();
-        store.set("key".to_string(), "value".to_string());
-        store.remove("key".to_string());
+        let (mut store, path) = temp_store();
+
+        store.set("key".to_string(), "value".to_string()).unwrap();
+
+        store.remove("key".to_string()).unwrap();
+
         assert_eq!(store.get("key".to_string()), None);
+
+        //clean up the temporary file 
+        let _ = std::fs::remove_file(path);
     }
 }
